@@ -1,0 +1,21 @@
+# [server]
+# port = 5555
+# host = 0.0.0.0
+# db = file_share.db
+# name = My file sharing
+# footer = super-simple-shares (c) 2026 Enni Hämäläinen
+
+# Each section is a filesystem path to share. URL path uses a slug from the directory name
+# or from "name" (e.g. name = pretty name -> slug "pretty-name"). No two shares can have the same slug.
+# If name (or footer etc.) contains # or ;, put the value in double quotes: name = "My Share #2"
+# Option "public": if true, no auth. If false, use credentials.N = user:password
+# Option "hidden": if true, share is not shown on the root listing but is reachable by direct URL
+
+[/home/user/directory]
+public = true
+
+[/home/user/private_directory]
+name = Private files
+public = false
+credentials.1 = user:password
+credentials.2 = other:something_else
