@@ -225,8 +225,7 @@ def index():
             continue
         safe_label = s.name.replace("<", "&lt;").replace(">", "&gt;")
         lines.append("<li><a href='/%s/'>%s</a></li>" % (s.slug, safe_label))
-    footer_text = server["footer"].replace("<", "&lt;").replace(">", "&gt;")
-    lines.append("</ul></main><footer class='app-footer'>%s</footer></body></html>" % footer_text)
+    lines.append("</ul></main><footer class='app-footer'>%s</footer></body></html>" % server["footer"])
     return "\n".join(lines)
 
 
@@ -359,8 +358,7 @@ def share_path(slug: str, subpath: str = ""):
         row_cls = " class='dir'" if is_dir else ""
         safe_name = name.replace("<", "&lt;").replace(">", "&gt;")
         lines.append("<tr%s><td class='name'><a href='%s'>%s</a></td><td class='mtime'>%s</td><td class='size'>%s</td></tr>" % (row_cls, url, safe_name, mtime_str, size_str))
-    footer_text = server["footer"].replace("<", "&lt;").replace(">", "&gt;")
-    lines.append("</tbody></table></main><footer class='app-footer'>%s</footer></body></html>" % footer_text)
+    lines.append("</tbody></table></main><footer class='app-footer'>%s</footer></body></html>" % server["footer"])
     return "\n".join(lines)
 
 

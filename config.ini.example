@@ -3,7 +3,7 @@
 # host = 0.0.0.0
 # db = file_share.db
 # name = My file sharing
-# footer = super-simple-shares (c) 2026 Enni Hämäläinen
+# footer = <a href="https://github.com/...">project</a> (c) 2026 Name  (HTML allowed)
 
 # Each section is a filesystem path to share. URL path uses a slug from the directory name
 # or from "name" (e.g. name = pretty name -> slug "pretty-name"). No two shares can have the same slug.

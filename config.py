@@ -28,7 +28,7 @@ def _slugify(s: str) -> str:
     return s.strip("-") or "share"
 
 
-DEFAULT_FOOTER = "super-simple-shares (c) 2026 Enni Hämäläinen"
+DEFAULT_FOOTER = '<a href="https://github.com/jusa/super-simple-shares">super-simple-shares</a> (c) 2026 Enni Hämäläinen'
 
 
 def get_server_config(path: str) -> dict:
