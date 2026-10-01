@@ -2,6 +2,7 @@
 # port = 5555
 # host = 0.0.0.0
 # db = file_share.db
+# secret = long-random-string
 # name = My file sharing
 # footer = <a href="https://github.com/...">project</a> (c) 2026 Name  (HTML allowed)
 
@@ -9,6 +10,12 @@
 # or from "name" (e.g. name = pretty name -> slug "pretty-name"). No two shares can have the same slug.
 # If name (or footer etc.) contains # or ;, put the value in double quotes: name = "My Share #2"
 # Option "public": if true, no auth. If false, use credentials.N = user:password
+# The password may instead be a SHA-256 hash, so the plain password is not stored:
+#   sha256:<64 hex chars>                         unsalted hash of the UTF-8 password
+#   sha256:<salt hex>:<64 hex chars>              salted, hash is SHA-256(salt bytes + password)
+#   python3 -c "import hashlib,secrets; s=secrets.token_hex(16); print('sha256:'+s+':'+hashlib.sha256(bytes.fromhex(s)+b'the-password').hexdigest())"
+# Browsers get an HTML login form. The session cookie can hold logins for several shares at once.
+# If "secret" is omitted, one is created in the database and reused across restarts.
 # Option "hidden": if true, share is not shown on the root listing but is reachable by direct URL
 
 [/home/user/directory]

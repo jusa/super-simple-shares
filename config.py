@@ -34,7 +34,14 @@ DEFAULT_FOOTER = '<a href="https://github.com/jusa/super-simple-shares">super-si
 def get_server_config(path: str) -> dict:
     cp = configparser.ConfigParser()
     cp.read(path)
-    out = {"port": 5000, "host": "0.0.0.0", "db": "file_share.db", "name": "Shares", "footer": DEFAULT_FOOTER}
+    out = {
+        "port": 5000,
+        "host": "0.0.0.0",
+        "db": "file_share.db",
+        "name": "Shares",
+        "footer": DEFAULT_FOOTER,
+        "secret": "",
+    }
     if cp.has_section("server"):
         out["port"] = cp.getint("server", "port", fallback=5000)
         host = cp.get("server", "host", fallback="0.0.0.0").strip()
@@ -44,6 +51,7 @@ def get_server_config(path: str) -> dict:
         if db_path:
             out["db"] = db_path
         out["name"] = cp.get("server", "name", fallback="Shares").strip() or "Shares"
+        out["secret"] = cp.get("server", "secret", fallback="").strip()
         footer = cp.get("server", "footer", fallback=DEFAULT_FOOTER).strip()
         if footer:
             out["footer"] = footer

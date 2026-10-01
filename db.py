@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: MIT
 
-import sqlite3
 import logging
+import secrets
+import sqlite3
 from datetime import datetime
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,33 @@ def init_db(db_path: str) -> None:
             """
         )
         conn.commit()
+
+
+def get_or_create_secret(db_path: str) -> str:
+    with sqlite3.connect(db_path, timeout=5.0) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        row = conn.execute("SELECT value FROM app_meta WHERE key = 'secret'").fetchone()
+        if row and row[0]:
+            return row[0]
+        secret = secrets.token_hex(32)
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO app_meta (key, value) VALUES ('secret', ?)",
+            (secret,),
+        )
+        row = conn.execute("SELECT value FROM app_meta WHERE key = 'secret'").fetchone()
+        conn.commit()
+        if cur.rowcount == 1:
+            logger.info("Created session secret in %s", db_path)
+        if not row or not row[0]:
+            raise RuntimeError("Could not store session secret")
+        return row[0]
 
 
 def log_download(

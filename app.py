@@ -2,15 +2,17 @@
 #
 # SPDX-License-Identifier: MIT
 
+import hashlib
 import hmac
+import html
 import logging
 import mimetypes
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from flask import Flask, abort, make_response, request, send_file
+from flask import Flask, abort, g, make_response, redirect, request, send_file, session
 
 from config import get_server_config, load_config, Share
 import db
@@ -24,7 +26,12 @@ CONFIG_PATH = os.environ.get("FILE_SHARE_CONFIG", "config.ini")
 
 _server_config = get_server_config(CONFIG_PATH)
 app.config["FILE_SHARE_DB"] = _server_config["db"]
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
+app.permanent_session_lifetime = timedelta(days=7)
 db.init_db(app.config["FILE_SHARE_DB"])
+app.secret_key = _server_config["secret"] or db.get_or_create_secret(app.config["FILE_SHARE_DB"])
 
 _shares: list[Share] = []
 _config_mtime: float | None = None
@@ -85,25 +92,159 @@ def resolve_path(share: Share, subpath: str) -> Path | None:
     return resolved
 
 
+AUTH_SESSION_KEY = "auth"
+_VIS_ORDER = {"visible": 0, "hidden": 1, "all-hidden": 2}
+
+
+def _esc(s: str) -> str:
+    return html.escape(s, quote=True)
+
+
+def _credential_token(user: str, password: str) -> str:
+    key = app.secret_key
+    if isinstance(key, str):
+        key = key.encode()
+    msg = user.encode() + b"\0" + password.encode()
+    return hmac.new(key, msg, "sha256").hexdigest()
+
+
+def _auth_map() -> dict[str, list[str]]:
+    raw = session.get(AUTH_SESSION_KEY)
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for slug, tokens in raw.items():
+        if not isinstance(slug, str) or not isinstance(tokens, list):
+            continue
+        kept = [t for t in tokens if isinstance(t, str)]
+        if kept:
+            out[slug] = kept
+    return out
+
+
+def _share_tokens(slug: str) -> set[str]:
+    return set(_auth_map().get(slug, []))
+
+
+def remember_login(share: Share, user: str, password: str) -> None:
+    token = _credential_token(user, password)
+    auth = _auth_map()
+    tokens = set(auth.get(share.slug, []))
+    if token in tokens:
+        return
+    tokens.add(token)
+    auth[share.slug] = sorted(tokens)
+    session[AUTH_SESSION_KEY] = auth
+    session.permanent = True
+
+
+def forget_share(slug: str) -> None:
+    auth = _auth_map()
+    if slug not in auth:
+        return
+    auth.pop(slug, None)
+    if auth:
+        session[AUTH_SESSION_KEY] = auth
+    else:
+        session.pop(AUTH_SESSION_KEY, None)
+
+
+def _posted_login() -> tuple[str, str] | None:
+    if request.method != "POST":
+        return None
+    if "username" not in request.form and "password" not in request.form:
+        return None
+    return ((request.form.get("username") or "").strip(), request.form.get("password") or "")
+
+
+_SHA256_UNSALTED = re.compile(r"^sha256:([0-9a-fA-F]{64})$")
+_SHA256_SALTED = re.compile(r"^sha256:([0-9a-fA-F]+):([0-9a-fA-F]{64})$")
+
+
+def _equals(given: str, expected: str) -> bool:
+    return hmac.compare_digest(given.encode(), expected.encode())
+
+
+def _password_matches(given: str, expected: str) -> bool:
+    salted = _SHA256_SALTED.match(expected)
+    if salted:
+        salt_hex, digest_hex = salted.group(1), salted.group(2)
+        if len(salt_hex) < 16 or len(salt_hex) % 2:
+            return False
+        digest = hashlib.sha256(bytes.fromhex(salt_hex) + given.encode()).hexdigest()
+        return hmac.compare_digest(digest, digest_hex.lower())
+    unsalted = _SHA256_UNSALTED.match(expected)
+    if unsalted:
+        digest = hashlib.sha256(given.encode()).hexdigest()
+        return hmac.compare_digest(digest, unsalted.group(1).lower())
+    return _equals(given, expected)
+
+
+def matching_credentials(share: Share) -> list[tuple[str, str, str | None]]:
+    cache = getattr(g, "_match_cache", None)
+    if cache is None:
+        cache = {}
+        g._match_cache = cache
+    if share.slug in cache:
+        return cache[share.slug]
+
+    tokens = _share_tokens(share.slug)
+    found: list[tuple[str, str, str | None]] = []
+    seen: set[str] = set()
+    for cred in share.credentials:
+        user, password, _vis = cred
+        token = _credential_token(user, password)
+        if token in tokens and token not in seen:
+            found.append(cred)
+            seen.add(token)
+
+    posted = _posted_login()
+    if posted and posted[0]:
+        user, password = posted
+        for cred in share.credentials:
+            cu, cp, _vis = cred
+            if _equals(user, cu) and _password_matches(password, cp):
+                remember_login(share, cu, cp)
+                token = _credential_token(cu, cp)
+                if token not in seen:
+                    found.append(cred)
+                    seen.add(token)
+                break
+
+    cache[share.slug] = found
+    return found
+
+
 def check_auth(share: Share) -> bool:
     if share.public:
         return True
-    auth = request.authorization
-    if not auth or not auth.username or not auth.password:
-        return False
-    for user, raw_pass, _ in share.credentials:
-        if hmac.compare_digest(auth.username, user) and hmac.compare_digest(auth.password, raw_pass):
-            return True
-    return False
+    return bool(matching_credentials(share))
 
 
 def get_effective_visibility(share: Share) -> str:
-    auth = request.authorization
-    if auth:
-        for user, raw_pass, vis_override in share.credentials:
-            if hmac.compare_digest(auth.username, user) and hmac.compare_digest(auth.password, raw_pass):
-                return vis_override if vis_override else share.visibility
-    return share.visibility
+    best = share.visibility
+    best_rank = _VIS_ORDER.get(best, 1)
+    for _user, _password, vis in matching_credentials(share):
+        candidate = vis or share.visibility
+        rank = _VIS_ORDER.get(candidate, 1)
+        if rank < best_rank:
+            best = candidate
+            best_rank = rank
+    return best
+
+
+def authenticated_username(share: Share) -> str | None:
+    matches = matching_credentials(share)
+    if not matches:
+        return None
+    best_user = matches[0][0]
+    best_rank = 99
+    for user, _password, vis in matches:
+        rank = _VIS_ORDER.get(vis or share.visibility, 1)
+        if rank < best_rank:
+            best_rank = rank
+            best_user = user
+    return best_user
 
 
 def has_listing_credentials(share: Share) -> bool:
@@ -123,7 +264,7 @@ def _maybe_set_listable_cookie(response, share: Share) -> None:
         return
     if get_effective_visibility(share) not in ("visible", "hidden"):
         return
-    if not request.authorization:
+    if not matching_credentials(share):
         return
     slugs = _listable_slugs_from_cookie() | {share.slug}
     response.set_cookie(
@@ -159,17 +300,71 @@ def client_ip() -> str:
     return request.remote_addr or ""
 
 
-def require_auth(share: Share):
-    if not check_auth(share):
-        return (
-            (
-                "<!DOCTYPE html><html><head><title>Auth required</title></head>"
-                "<body><p>Authentication required.</p></body></html>"
-            ),
-            401,
-            {"WWW-Authenticate": 'Basic realm="File share"'},
-        )
-    return None
+def _has_any_login() -> bool:
+    if _auth_map():
+        return True
+    return bool(_listable_slugs_from_cookie())
+
+
+def _logout_all_link() -> str:
+    if not _has_any_login():
+        return ""
+    return "<p class='logout'><a href='/logout'>Log out from all shares</a></p>"
+
+
+def _share_logout_link(share: Share) -> str:
+    if not _share_tokens(share.slug):
+        return ""
+    return "<p class='logout'><a href='/logout/%s'>Log out</a></p>" % share.slug
+
+
+def login_page(
+    share: Share,
+    *,
+    error: str | None = None,
+    status: int = 401,
+    message: str | None = None,
+):
+    server = get_server_config(CONFIG_PATH)
+    username_value = ""
+    if error and request.method == "POST":
+        username_value = _esc((request.form.get("username") or "").strip())
+    err_html = "<p class='error'>%s</p>" % _esc(error) if error else ""
+    msg = message or "Authentication required."
+    lines = [
+        "<!DOCTYPE html>",
+        "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Log in</title>",
+        "<style>",
+        "body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh; display: flex; flex-direction: column; }",
+        ".app-main { flex: 1; margin: 2rem; max-width: 24rem; }",
+        "a { color: #2563eb; text-decoration: none; }",
+        "a:hover { text-decoration: underline; }",
+        "h1 { font-size: 1.5rem; margin-bottom: 1rem; }",
+        ".breadcrumb { margin-bottom: 1rem; color: #6b7280; font-size: 0.9375rem; }",
+        ".breadcrumb a { color: #2563eb; }",
+        "label { display: block; margin: 0.75rem 0; font-weight: 500; }",
+        "input { display: block; width: 100%; margin-top: 0.25rem; padding: 0.45rem 0.5rem; font: inherit; box-sizing: border-box; }",
+        "button { font: inherit; margin-top: 0.5rem; padding: 0.45rem 0.9rem; cursor: pointer; }",
+        ".error { color: #b91c1c; }",
+        ".app-footer { margin: 2rem; font-size: 0.875rem; color: #6b7280; }",
+        "@media (max-width: 768px) { .app-main { margin: 1rem; } }",
+        "</style></head><body>",
+        "<main class='app-main'>",
+        "<p class='breadcrumb'><a href='/'>{}</a> / {}</p>".format(_esc(server["name"]), _esc(share.name)),
+        "<h1>Log in</h1>",
+        "<p>%s</p>" % _esc(msg),
+        err_html,
+        "<form class='login' method='post' action='%s'>" % _esc(request.path),
+        "<label>Username <input name='username' value='%s' autocomplete='username' required></label>" % username_value,
+        "<label>Password <input type='password' name='password' autocomplete='current-password' required></label>",
+        "<button type='submit'>Log in</button>",
+        "</form></main>",
+        "<footer class='app-footer'>%s</footer></body></html>" % server["footer"],
+    ]
+    resp = make_response("\n".join(lines), status)
+    resp.headers["Cache-Control"] = "no-store"
+    _remove_slug_from_listable_cookie(resp, share.slug)
+    return resp
 
 
 def send_file_with_range(
@@ -177,6 +372,7 @@ def send_file_with_range(
     as_attachment: bool = True,
     download_name: str | None = None,
     mimetype: str | None = None,
+    username: str | None = None,
 ):
     size = filepath.stat().st_size
     range_header = request.headers.get("Range")
@@ -190,7 +386,7 @@ def send_file_with_range(
             str(filepath),
             client_ip(),
             request.user_agent.string if request.user_agent else None,
-            request.authorization.username if request.authorization else None,
+            username,
             range_request=False,
         )
         chunk_size = 262144
@@ -233,7 +429,7 @@ def send_file_with_range(
         str(filepath),
         client_ip(),
         request.user_agent.string if request.user_agent else None,
-        request.authorization.username if request.authorization else None,
+        username,
         range_request=True,
     )
 
@@ -293,23 +489,42 @@ def index():
             continue
         safe_label = s.name.replace("<", "&lt;").replace(">", "&gt;")
         lines.append("<li><a href='/%s/'>%s</a></li>" % (s.slug, safe_label))
-    lines.append("</ul></main><footer class='app-footer'>%s</footer></body></html>" % server["footer"])
+    lines.append("</ul>%s</main><footer class='app-footer'>%s</footer></body></html>" % (_logout_all_link(), server["footer"]))
     return "\n".join(lines)
 
 
-@app.route("/<slug>/")
-@app.route("/<slug>/<path:subpath>")
+@app.route("/logout")
+def logout():
+    session.pop(AUTH_SESSION_KEY, None)
+    resp = redirect("/")
+    resp.delete_cookie(LISTABLE_COOKIE, path="/")
+    return resp
+
+
+@app.route("/logout/<slug>")
+def logout_share(slug: str):
+    share, _ = get_share_by_slug(slug)
+    if share is None:
+        abort(404)
+    forget_share(slug)
+    resp = redirect("/%s/" % slug)
+    _remove_slug_from_listable_cookie(resp, slug)
+    return resp
+
+
+@app.route("/<slug>/", methods=["GET", "POST"])
+@app.route("/<slug>/<path:subpath>", methods=["GET", "POST"])
 def share_path(slug: str, subpath: str = ""):
     share, _ = get_share_by_slug(slug)
     if share is None:
         abort(404)
-    err = require_auth(share)
-    if err is not None:
-        resp = make_response(err[0], err[1])
-        if len(err) > 2:
-            resp.headers.update(err[2])
-        _remove_slug_from_listable_cookie(resp, share.slug)
-        return resp
+    matches = matching_credentials(share)
+    posted = _posted_login()
+    login_error = None
+    if posted is not None and posted[0] and not matches:
+        login_error = "Invalid username or password."
+    if not check_auth(share):
+        return login_page(share, error=login_error)
 
     resolved = resolve_path(share, subpath)
     if resolved is None or not resolved.exists():
@@ -318,24 +533,21 @@ def share_path(slug: str, subpath: str = ""):
     effective_visibility = get_effective_visibility(share)
     if resolved.is_dir() and effective_visibility == "all-hidden":
         if share.public and has_listing_credentials(share):
-            if request.args.get("login"):
-                resp = make_response(
-                    "<!DOCTYPE html><html><head><title>Log in</title></head><body><p>Authentication required.</p></body></html>",
-                    401,
-                )
-                resp.headers["WWW-Authenticate"] = 'Basic realm="File share"'
-                _remove_slug_from_listable_cookie(resp, share.slug)
-                return resp
-            login_path = request.path + ("&" if "?" in request.path else "?") + "login=1"
-            resp = make_response(
-                "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Log in</title>"
-                "<body><p>This share requires authentication to browse.</p>"
-                "<p><a href='%s'>Log in</a></p></body></html>" % login_path,
-                200,
+            notice = login_error
+            if matches and not notice:
+                notice = "These credentials do not allow browsing this share."
+            return login_page(
+                share,
+                error=notice,
+                status=200,
+                message="This share requires authentication to browse.",
             )
-            _remove_slug_from_listable_cookie(resp, share.slug)
-            return resp
         abort(404)
+
+    if resolved.is_dir() and request.method == "POST":
+        resp = redirect(request.path, code=303)
+        _maybe_set_listable_cookie(resp, share)
+        return resp
 
     if resolved.is_file():
         if resolved.name == "index.info":
@@ -347,6 +559,7 @@ def share_path(slug: str, subpath: str = ""):
             as_attachment=as_attachment,
             download_name=resolved.name,
             mimetype=guessed if guessed else None,
+            username=authenticated_username(share),
         )
         _maybe_set_listable_cookie(r, share)
         return r
@@ -454,7 +667,7 @@ def share_path(slug: str, subpath: str = ""):
         row_cls = " class='dir'" if is_dir else ""
         safe_name = name.replace("<", "&lt;").replace(">", "&gt;")
         lines.append("<tr%s><td class='name'><a href='%s'>%s</a></td><td class='mtime'>%s</td><td class='size'>%s</td></tr>" % (row_cls, url, safe_name, mtime_str, size_str))
-    lines.append("</tbody></table></main><footer class='app-footer'>%s</footer></body></html>" % server["footer"])
+    lines.append("</tbody></table>%s</main><footer class='app-footer'>%s</footer></body></html>" % (_share_logout_link(share), server["footer"]))
     resp = make_response("\n".join(lines))
     _maybe_set_listable_cookie(resp, share)
     return resp
