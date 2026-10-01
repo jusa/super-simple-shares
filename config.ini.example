@@ -2,6 +2,7 @@
 # port = 5555
 # host = 0.0.0.0
 # db = file_share.db
+# Omit db to leave download logging off. No database file is created.
 # Extra keys are strings you can insert with $KEY in db and in share sections.
 # ROOT = /home/foo/bar
 # db = $ROOT/my_db.db
@@ -20,7 +21,8 @@
 #   sha256:<salt hex>:<64 hex chars>              salted, hash is SHA-256(salt bytes + password)
 #   python3 -c "import hashlib,secrets; s=secrets.token_hex(16); print('sha256:'+s+':'+hashlib.sha256(bytes.fromhex(s)+b'the-password').hexdigest())"
 # Browsers get an HTML login form. The session cookie can hold logins for several shares at once.
-# If "secret" is omitted, one is created in the database and reused across restarts.
+# If "secret" is omitted and db is set, a secret is generated once and stored in the database.
+# If both are omitted, a new random secret is used on each start, and login cookies do not survive a restart.
 # Option "hidden": if true, share is not shown on the root listing but is reachable by direct URL
 # [$ROOT/share-1]
 # public = true

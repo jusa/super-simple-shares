@@ -56,13 +56,15 @@ def get_or_create_secret(db_path: str) -> str:
 
 
 def log_download(
-    db_path: str,
+    db_path: str | None,
     path: str,
     ip: str | None,
     user_agent: str | None,
     username: str | None = None,
     range_request: bool = False,
 ) -> None:
+    if not db_path:
+        return
     try:
         with sqlite3.connect(db_path, timeout=5.0) as conn:
             conn.execute(

@@ -9,6 +9,7 @@ import logging
 import mimetypes
 import os
 import re
+import secrets
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -25,13 +26,22 @@ app = Flask(__name__)
 CONFIG_PATH = os.environ.get("FILE_SHARE_CONFIG", "config.ini")
 
 _server_config = get_server_config(CONFIG_PATH)
-app.config["FILE_SHARE_DB"] = _server_config["db"]
+app.config["FILE_SHARE_DB"] = _server_config["db"] or None
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
 app.permanent_session_lifetime = timedelta(seconds=_server_config["cookie_lifetime"])
-db.init_db(app.config["FILE_SHARE_DB"])
-app.secret_key = _server_config["secret"] or db.get_or_create_secret(app.config["FILE_SHARE_DB"])
+if app.config["FILE_SHARE_DB"]:
+    db.init_db(app.config["FILE_SHARE_DB"])
+else:
+    logger.info("Download logging disabled")
+if _server_config["secret"]:
+    app.secret_key = _server_config["secret"]
+elif app.config["FILE_SHARE_DB"]:
+    app.secret_key = db.get_or_create_secret(app.config["FILE_SHARE_DB"])
+else:
+    app.secret_key = secrets.token_hex(32)
+    logger.info("No secret configured; using a random session secret for this run")
 
 _shares: list[Share] = []
 _config_mtime: float | None = None

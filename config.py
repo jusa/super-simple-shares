@@ -87,7 +87,7 @@ def get_server_config(path: str) -> dict:
     out = {
         "port": 5000,
         "host": "0.0.0.0",
-        "db": "file_share.db",
+        "db": "",
         "name": "Shares",
         "footer": DEFAULT_FOOTER,
         "secret": "",
@@ -99,11 +99,13 @@ def get_server_config(path: str) -> dict:
         host = cp.get("server", "host", fallback="0.0.0.0").strip()
         if host:
             out["host"] = host
-        db_path = _substitute(cp.get("server", "db", fallback="file_share.db").strip(), variables)
-        if db_path:
-            out["db"] = db_path
+        if cp.has_option("server", "db"):
+            db_path = _substitute(cp.get("server", "db").strip(), variables)
+            if db_path:
+                out["db"] = db_path
         out["name"] = cp.get("server", "name", fallback="Shares").strip() or "Shares"
-        out["secret"] = cp.get("server", "secret", fallback="").strip()
+        if cp.has_option("server", "secret"):
+            out["secret"] = cp.get("server", "secret").strip()
         if cp.has_option("server", "cookie_lifetime"):
             raw = cp.get("server", "cookie_lifetime")
             parsed = parse_cookie_lifetime(raw)
