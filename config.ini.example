@@ -2,6 +2,9 @@
 # port = 5555
 # host = 0.0.0.0
 # db = file_share.db
+# Extra keys are strings you can insert with $KEY in db and in share sections.
+# ROOT = /home/foo/bar
+# db = $ROOT/my_db.db
 # secret = long-random-string
 # cookie_lifetime = 7d
 # cookie_lifetime = 12h
@@ -19,6 +22,8 @@
 # Browsers get an HTML login form. The session cookie can hold logins for several shares at once.
 # If "secret" is omitted, one is created in the database and reused across restarts.
 # Option "hidden": if true, share is not shown on the root listing but is reachable by direct URL
+# [$ROOT/share-1]
+# public = true
 
 [/home/user/directory]
 public = true

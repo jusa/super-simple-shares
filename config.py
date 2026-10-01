@@ -33,6 +33,42 @@ DEFAULT_COOKIE_LIFETIME = 7 * 24 * 3600
 _COOKIE_LIFETIME = re.compile(r"^(\d+)([hd])$", re.IGNORECASE)
 
 
+_SERVER_SETTINGS = {"port", "host", "db", "name", "footer", "secret", "cookie_lifetime"}
+
+
+def _server_variables(cp: configparser.ConfigParser) -> dict[str, str]:
+    if not cp.has_section("server"):
+        return {}
+    variables = {}
+    for key, value in cp.items("server"):
+        if key.lower() not in _SERVER_SETTINGS:
+            variables[key.lower()] = value
+    for _ in range(len(variables) + 1):
+        changed = False
+        for name, value in list(variables.items()):
+            others = {key: item for key, item in variables.items() if key != name}
+            expanded = _substitute(value, others)
+            if expanded != value:
+                variables[name] = expanded
+                changed = True
+        if not changed:
+            break
+    return variables
+
+
+def _substitute(text: str, variables: dict[str, str]) -> str:
+    if not variables or "$" not in text:
+        return text
+    for name in sorted(variables, key=len, reverse=True):
+        text = re.sub(
+            rf"\${re.escape(name)}(?![A-Za-z0-9_])",
+            lambda _match, replacement=variables[name]: replacement,
+            text,
+            flags=re.IGNORECASE,
+        )
+    return text
+
+
 def parse_cookie_lifetime(value: str) -> int | None:
     match = _COOKIE_LIFETIME.match(value.strip())
     if not match:
@@ -57,12 +93,13 @@ def get_server_config(path: str) -> dict:
         "secret": "",
         "cookie_lifetime": DEFAULT_COOKIE_LIFETIME,
     }
+    variables = _server_variables(cp)
     if cp.has_section("server"):
         out["port"] = cp.getint("server", "port", fallback=5000)
         host = cp.get("server", "host", fallback="0.0.0.0").strip()
         if host:
             out["host"] = host
-        db_path = cp.get("server", "db", fallback="file_share.db").strip()
+        db_path = _substitute(cp.get("server", "db", fallback="file_share.db").strip(), variables)
         if db_path:
             out["db"] = db_path
         out["name"] = cp.get("server", "name", fallback="Shares").strip() or "Shares"
@@ -83,12 +120,13 @@ def get_server_config(path: str) -> dict:
 def load_config(path: str) -> list[Share]:
     cp = configparser.ConfigParser()
     cp.read(path)
+    variables = _server_variables(cp)
     shares = []
     seen_slugs = set()
     for section in cp.sections():
         if section.strip().lower() == "server":
             continue
-        root = Path(section.strip())
+        root = Path(_substitute(section.strip(), variables))
         if not root.is_absolute():
             root = root.resolve()
         public = cp.getboolean(section, "public", fallback=False)
@@ -97,7 +135,7 @@ def load_config(path: str) -> list[Share]:
             visibility = "hidden" if cp.getboolean(section, "hidden", fallback=False) else "visible"
         if visibility not in ("visible", "hidden", "all-hidden"):
             visibility = "visible"
-        name = cp.get(section, "name", fallback="").strip() or root.name or str(root)
+        name = _substitute(cp.get(section, "name", fallback="").strip(), variables) or root.name or str(root)
         slug = _slugify(root.name if root.name else str(root))
         if slug in seen_slugs:
             logger.warning("Duplicate share slug '%s' for section %s, skipping", slug, section)
@@ -106,7 +144,7 @@ def load_config(path: str) -> list[Share]:
         creds = []
         for key, value in cp.items(section):
             if key.startswith("credentials."):
-                part = value.strip()
+                part = _substitute(value.strip(), variables)
                 if ":" in part:
                     segs = part.split(":")
                     vis_override = None
