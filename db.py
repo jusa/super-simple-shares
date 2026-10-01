@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def init_db(db_path: str) -> None:
-    with sqlite3.connect(db_path) as conn:
+    with sqlite3.connect(db_path, timeout=5.0) as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS downloads (
@@ -37,7 +37,7 @@ def log_download(
     range_request: bool = False,
 ) -> None:
     try:
-        with sqlite3.connect(db_path) as conn:
+        with sqlite3.connect(db_path, timeout=5.0) as conn:
             conn.execute(
                 """
                 INSERT INTO downloads (at, ip, user_agent, path, username, range_request)

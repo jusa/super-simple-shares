@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 class Share:
     root: Path
     public: bool
-    credentials: list[tuple[str, str]]
+    credentials: list[tuple[str, str, str | None]]
     name: str
     slug: str
-    hidden: bool
+    visibility: str
 
 
 def _slugify(s: str) -> str:
@@ -62,9 +62,13 @@ def load_config(path: str) -> list[Share]:
         if not root.is_absolute():
             root = root.resolve()
         public = cp.getboolean(section, "public", fallback=False)
-        hidden = cp.getboolean(section, "hidden", fallback=False)
+        visibility = cp.get(section, "visibility", fallback="visible").strip().lower() or "visible"
+        if cp.has_option(section, "hidden") and not cp.has_option(section, "visibility"):
+            visibility = "hidden" if cp.getboolean(section, "hidden", fallback=False) else "visible"
+        if visibility not in ("visible", "hidden", "all-hidden"):
+            visibility = "visible"
         name = cp.get(section, "name", fallback="").strip() or root.name or str(root)
-        slug = _slugify(name)
+        slug = _slugify(root.name if root.name else str(root))
         if slug in seen_slugs:
             logger.warning("Duplicate share slug '%s' for section %s, skipping", slug, section)
             continue
@@ -74,7 +78,16 @@ def load_config(path: str) -> list[Share]:
             if key.startswith("credentials."):
                 part = value.strip()
                 if ":" in part:
-                    u, _, p = part.partition(":")
-                    creds.append((u.strip(), p.strip()))
-        shares.append(Share(root=root, public=public, credentials=creds, name=name, slug=slug, hidden=hidden))
+                    segs = part.split(":")
+                    vis_override = None
+                    if len(segs) >= 3 and segs[-1].startswith("visibility="):
+                        v = segs[-1].split("=", 1)[1].strip().lower()
+                        if v in ("visible", "hidden", "all-hidden") or v == "hidden-all":
+                            vis_override = "all-hidden" if v == "hidden-all" else v
+                        segs = segs[:-1]
+                    u = segs[0].strip()
+                    p = ":".join(segs[1:]).strip() if len(segs) > 1 else ""
+                    if u:
+                        creds.append((u, p, vis_override))
+        shares.append(Share(root=root, public=public, credentials=creds, name=name, slug=slug, visibility=visibility))
     return shares

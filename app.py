@@ -10,7 +10,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, abort, request, send_file
+from flask import Flask, abort, make_response, request, send_file
 
 from config import get_server_config, load_config, Share
 import db
@@ -91,10 +91,65 @@ def check_auth(share: Share) -> bool:
     auth = request.authorization
     if not auth or not auth.username or not auth.password:
         return False
-    for user, raw_pass in share.credentials:
+    for user, raw_pass, _ in share.credentials:
         if hmac.compare_digest(auth.username, user) and hmac.compare_digest(auth.password, raw_pass):
             return True
     return False
+
+
+def get_effective_visibility(share: Share) -> str:
+    auth = request.authorization
+    if auth:
+        for user, raw_pass, vis_override in share.credentials:
+            if hmac.compare_digest(auth.username, user) and hmac.compare_digest(auth.password, raw_pass):
+                return vis_override if vis_override else share.visibility
+    return share.visibility
+
+
+def has_listing_credentials(share: Share) -> bool:
+    return any(vis in ("hidden", "visible") for _, _, vis in share.credentials if vis)
+
+LISTABLE_COOKIE = "sss_listable"
+LISTABLE_COOKIE_MAX_AGE = 604800
+
+
+def _listable_slugs_from_cookie() -> set[str]:
+    raw = request.cookies.get(LISTABLE_COOKIE) or ""
+    return {s.strip() for s in raw.split(",") if s.strip()}
+
+
+def _maybe_set_listable_cookie(response, share: Share) -> None:
+    if share.visibility not in ("hidden", "all-hidden"):
+        return
+    if get_effective_visibility(share) not in ("visible", "hidden"):
+        return
+    if not request.authorization:
+        return
+    slugs = _listable_slugs_from_cookie() | {share.slug}
+    response.set_cookie(
+        LISTABLE_COOKIE,
+        ",".join(sorted(slugs)),
+        max_age=LISTABLE_COOKIE_MAX_AGE,
+        path="/",
+        httponly=True,
+        samesite="Lax",
+    )
+
+
+def _remove_slug_from_listable_cookie(response, slug: str) -> None:
+    slugs = _listable_slugs_from_cookie()
+    slugs.discard(slug)
+    if not slugs:
+        response.delete_cookie(LISTABLE_COOKIE, path="/")
+    else:
+        response.set_cookie(
+            LISTABLE_COOKIE,
+            ",".join(sorted(slugs)),
+            max_age=LISTABLE_COOKIE_MAX_AGE,
+            path="/",
+            httponly=True,
+            samesite="Lax",
+        )
 
 
 def client_ip() -> str:
@@ -138,13 +193,25 @@ def send_file_with_range(
             request.authorization.username if request.authorization else None,
             range_request=False,
         )
-        r = send_file(
-            filepath,
-            as_attachment=as_attachment,
-            download_name=name,
-            mimetype=mimetype,
-        )
+        chunk_size = 262144
+
+        def stream_full():
+            with open(filepath, "rb") as f:
+                while True:
+                    data = f.read(chunk_size)
+                    if not data:
+                        break
+                    yield data
+
+        from flask import Response
+        from urllib.parse import quote
+        r = Response(stream_full(), status=200, mimetype=mimetype or "application/octet-stream")
+        r.headers["Content-Length"] = size
         r.headers["Accept-Ranges"] = "bytes"
+        if as_attachment:
+            r.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(name)}"
+        else:
+            r.headers["Content-Disposition"] = f"inline; filename*=UTF-8''{quote(name)}"
         return r
 
     match = re.match(r"bytes=(\d*)-(\d*)", range_header.strip())
@@ -174,7 +241,7 @@ def send_file_with_range(
         with open(filepath, "rb") as f:
             f.seek(start)
             remaining = length
-            chunk_size = 65536
+            chunk_size = 262144
             while remaining > 0:
                 read = min(chunk_size, remaining)
                 data = f.read(read)
@@ -220,8 +287,9 @@ def index():
         "</style></head><body>",
         "<main class='app-main'><h1>%s</h1><ul>" % title,
     ]
+    listable_slugs = _listable_slugs_from_cookie()
     for s in shares:
-        if s.hidden:
+        if s.visibility != "visible" and s.slug not in listable_slugs:
             continue
         safe_label = s.name.replace("<", "&lt;").replace(">", "&gt;")
         lines.append("<li><a href='/%s/'>%s</a></li>" % (s.slug, safe_label))
@@ -237,10 +305,36 @@ def share_path(slug: str, subpath: str = ""):
         abort(404)
     err = require_auth(share)
     if err is not None:
-        return err
+        resp = make_response(err[0], err[1])
+        if len(err) > 2:
+            resp.headers.update(err[2])
+        _remove_slug_from_listable_cookie(resp, share.slug)
+        return resp
 
     resolved = resolve_path(share, subpath)
     if resolved is None or not resolved.exists():
+        abort(404)
+
+    effective_visibility = get_effective_visibility(share)
+    if resolved.is_dir() and effective_visibility == "all-hidden":
+        if share.public and has_listing_credentials(share):
+            if request.args.get("login"):
+                resp = make_response(
+                    "<!DOCTYPE html><html><head><title>Log in</title></head><body><p>Authentication required.</p></body></html>",
+                    401,
+                )
+                resp.headers["WWW-Authenticate"] = 'Basic realm="File share"'
+                _remove_slug_from_listable_cookie(resp, share.slug)
+                return resp
+            login_path = request.path + ("&" if "?" in request.path else "?") + "login=1"
+            resp = make_response(
+                "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Log in</title>"
+                "<body><p>This share requires authentication to browse.</p>"
+                "<p><a href='%s'>Log in</a></p></body></html>" % login_path,
+                200,
+            )
+            _remove_slug_from_listable_cookie(resp, share.slug)
+            return resp
         abort(404)
 
     if resolved.is_file():
@@ -248,12 +342,14 @@ def share_path(slug: str, subpath: str = ""):
             abort(404)
         guessed = mimetypes.guess_type(str(resolved), strict=False)[0] or ""
         as_attachment = not guessed.startswith("image/")
-        return send_file_with_range(
+        r = send_file_with_range(
             resolved,
             as_attachment=as_attachment,
             download_name=resolved.name,
             mimetype=guessed if guessed else None,
         )
+        _maybe_set_listable_cookie(r, share)
+        return r
 
     INDEX_INFO = "index.info"
     entries = []
@@ -359,7 +455,9 @@ def share_path(slug: str, subpath: str = ""):
         safe_name = name.replace("<", "&lt;").replace(">", "&gt;")
         lines.append("<tr%s><td class='name'><a href='%s'>%s</a></td><td class='mtime'>%s</td><td class='size'>%s</td></tr>" % (row_cls, url, safe_name, mtime_str, size_str))
     lines.append("</tbody></table></main><footer class='app-footer'>%s</footer></body></html>" % server["footer"])
-    return "\n".join(lines)
+    resp = make_response("\n".join(lines))
+    _maybe_set_listable_cookie(resp, share)
+    return resp
 
 
 if __name__ == "__main__":
