@@ -28,7 +28,7 @@ def _slugify(s: str) -> str:
     return s.strip("-") or "share"
 
 
-DEFAULT_FOOTER = '<a href="https://github.com/jusa/super-simple-shares">super-simple-shares</a> (c) 2026 Enni Hämäläinen'
+DEFAULT_FOOTER = '<a href="https://github.com/jusa/super-simple-shares">super-simple-shares</a>'
 DEFAULT_COOKIE_LIFETIME = 7 * 24 * 3600
 _COOKIE_LIFETIME = re.compile(r"^(\d+)([hd])$", re.IGNORECASE)
 
