@@ -29,7 +29,7 @@ app.config["FILE_SHARE_DB"] = _server_config["db"]
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
-app.permanent_session_lifetime = timedelta(days=7)
+app.permanent_session_lifetime = timedelta(seconds=_server_config["cookie_lifetime"])
 db.init_db(app.config["FILE_SHARE_DB"])
 app.secret_key = _server_config["secret"] or db.get_or_create_secret(app.config["FILE_SHARE_DB"])
 
@@ -251,7 +251,16 @@ def has_listing_credentials(share: Share) -> bool:
     return any(vis in ("hidden", "visible") for _, _, vis in share.credentials if vis)
 
 LISTABLE_COOKIE = "sss_listable"
-LISTABLE_COOKIE_MAX_AGE = 604800
+
+
+@app.before_request
+def _apply_cookie_lifetime() -> None:
+    seconds = get_server_config(CONFIG_PATH)["cookie_lifetime"]
+    app.permanent_session_lifetime = timedelta(seconds=seconds)
+
+
+def _cookie_max_age() -> int:
+    return int(app.permanent_session_lifetime.total_seconds())
 
 
 def _listable_slugs_from_cookie() -> set[str]:
@@ -270,7 +279,7 @@ def _maybe_set_listable_cookie(response, share: Share) -> None:
     response.set_cookie(
         LISTABLE_COOKIE,
         ",".join(sorted(slugs)),
-        max_age=LISTABLE_COOKIE_MAX_AGE,
+        max_age=_cookie_max_age(),
         path="/",
         httponly=True,
         samesite="Lax",
@@ -286,7 +295,7 @@ def _remove_slug_from_listable_cookie(response, slug: str) -> None:
         response.set_cookie(
             LISTABLE_COOKIE,
             ",".join(sorted(slugs)),
-            max_age=LISTABLE_COOKIE_MAX_AGE,
+            max_age=_cookie_max_age(),
             path="/",
             httponly=True,
             samesite="Lax",

@@ -29,6 +29,20 @@ def _slugify(s: str) -> str:
 
 
 DEFAULT_FOOTER = '<a href="https://github.com/jusa/super-simple-shares">super-simple-shares</a> (c) 2026 Enni Hämäläinen'
+DEFAULT_COOKIE_LIFETIME = 7 * 24 * 3600
+_COOKIE_LIFETIME = re.compile(r"^(\d+)([hd])$", re.IGNORECASE)
+
+
+def parse_cookie_lifetime(value: str) -> int | None:
+    match = _COOKIE_LIFETIME.match(value.strip())
+    if not match:
+        return None
+    count = int(match.group(1))
+    if count <= 0:
+        return None
+    if match.group(2).lower() == "h":
+        return count * 3600
+    return count * 86400
 
 
 def get_server_config(path: str) -> dict:
@@ -41,6 +55,7 @@ def get_server_config(path: str) -> dict:
         "name": "Shares",
         "footer": DEFAULT_FOOTER,
         "secret": "",
+        "cookie_lifetime": DEFAULT_COOKIE_LIFETIME,
     }
     if cp.has_section("server"):
         out["port"] = cp.getint("server", "port", fallback=5000)
@@ -52,6 +67,13 @@ def get_server_config(path: str) -> dict:
             out["db"] = db_path
         out["name"] = cp.get("server", "name", fallback="Shares").strip() or "Shares"
         out["secret"] = cp.get("server", "secret", fallback="").strip()
+        if cp.has_option("server", "cookie_lifetime"):
+            raw = cp.get("server", "cookie_lifetime")
+            parsed = parse_cookie_lifetime(raw)
+            if parsed is None:
+                logger.warning("Invalid cookie_lifetime %r, using 7d", raw.strip())
+            else:
+                out["cookie_lifetime"] = parsed
         footer = cp.get("server", "footer", fallback=DEFAULT_FOOTER).strip()
         if footer:
             out["footer"] = footer

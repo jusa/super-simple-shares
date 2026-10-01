@@ -2,7 +2,7 @@
 
 Python file sharing app: directory listing and downloads with per-directory auth and download logging.
 
-- **Config**: `config.ini` (see `config.ini.example`). Path to config: env `FILE_SHARE_CONFIG` or `config.ini`. Under `[server]`: `port`, `host`, `db`, `name`, `footer`, optional `secret`. Share sections are filesystem paths; `public`, `credentials.N`, etc.
+- **Config**: `config.ini` (see `config.ini.example`). Path to config: env `FILE_SHARE_CONFIG` or `config.ini`. Under `[server]`: `port`, `host`, `db`, `name`, `footer`, optional `secret`, optional `cookie_lifetime` (`12h` or `7d`, default `7d`). Share sections are filesystem paths; `public`, `credentials.N`, etc.
 - **Auth**: protected shares show an HTML login form. A successful login is kept in a signed cookie, and that cookie can hold logins for more than one share. A credential password may be plain text or a `sha256:` hash (see `config.ini.example`). Omit `[server]` `secret` to generate one in the database. From the command line, POST `username` and `password` (the response sets the same cookie):
 
   ```bash

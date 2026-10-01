@@ -3,6 +3,8 @@
 # host = 0.0.0.0
 # db = file_share.db
 # secret = long-random-string
+# cookie_lifetime = 7d
+# cookie_lifetime = 12h
 # name = My file sharing
 # footer = <a href="https://github.com/...">project</a> (c) 2026 Name  (HTML allowed)
 
